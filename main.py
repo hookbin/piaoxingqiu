@@ -1,95 +1,171 @@
+# -*- coding: utf-8 -*-
+
 import request
 import config
+import time
+import threading
+from datetime import datetime
 
-'''
+"""
 目前仅支持【无需选座】的项目
-'''
-show_id = config.show_id
-session_id = config.session_id
-buy_count = config.buy_count
-audience_idx = config.audience_idx
-deliver_method = config.deliver_method
-seat_plan_id = ''
-session_id_exclude = []  # 被排除掉的场次
-price = 0
+"""
+
+
+class Config:
+    show_id = config.show_id
+    session_id = config.session_id
+    buy_count = config.buy_count
+    deliver_method = config.deliver_method
+    seat_plan_id = None
+    seat_plan_ids = config.seat_plan_ids
+    seat_plan_price = 0
+    seat_plan_prices = config.seat_plan_prices
+    push_token = config.push_token
+    start_time = config.start_time
+
+
+class Script(threading.Thread):
+
+    def __init__(self, token, push_flag):
+        threading.Thread.__init__(self)
+        self.token = token
+        self.push_flag = push_flag
+
+    def run(self):
+        self.init()
+
+    def init(self):
+        print(f"{self.push_flag} init")
+        # 获取观演人信息
+        self.audiences = request.get_audiences(self.token)
+        print("audiences:")
+        print(self.audiences)
+        self.audience_ids = [self.audiences[i]["id"] for i in range(Config.buy_count)]
+
+        # 获取默认收货地址
+        self.address = request.get_address(self.token)
+        print("address:")
+        print(self.address)
+
+        # 获取快递费用
+        self.express_fee = request.get_express_fee(
+            Config.show_id,
+            Config.session_id,
+            Config.seat_plan_ids[0],
+            Config.seat_plan_prices[0],
+            Config.buy_count,
+            self.address["locationId"],
+            self.token,
+        )
+        print("express_fee:")
+        print(self.express_fee)
+
+        # 设置要执行的特定毫秒时间
+        date_format = "%Y-%m-%d %H:%M:%S.%f"
+        target_time = datetime.strptime(Config.start_time, date_format)
+        target_millisecond = int(
+            time.mktime(target_time.timetuple()) * 1000 + target_time.microsecond / 1000
+        )
+        current_millisecond = int(round(time.time() * 1000))
+        wait_millisecond = target_millisecond - current_millisecond
+        if wait_millisecond > 0:
+            time.sleep(wait_millisecond / 1000)
+        self.doing()
+
+    def doing(self):
+        print(f"{self.push_flag} doing")
+
+        try:
+            threading.Thread(
+                target=request.notification,
+                args=(Config.push_token, self.push_flag + "开始了！"),
+            ).start()
+        except Exception as e:
+            print(e)
+
+        try:
+            last_index = len(Config.seat_plan_ids) - 1
+            # 直接冲一下最贵的
+            threading.Thread(
+                target=self.postOrder,
+                args=(
+                    Config.seat_plan_ids[last_index],
+                    Config.seat_plan_prices[last_index],
+                ),
+            ).start()
+        except Exception as e:
+            print(e)
+
+        while True:
+            try:
+                self.seat_counts = request.get_seat_count(
+                    Config.show_id, Config.session_id
+                )
+                print("seat_counts")
+                print(self.seat_counts)
+                for i in self.seat_counts:
+                    try:
+                        seat_plan_id_index = Config.seat_plan_ids.index(i["seatPlanId"])
+                    except Exception as e:
+                        continue
+                    if seat_plan_id_index > 0 and i["canBuyCount"] >= Config.buy_count:
+                        self.postOrder(
+                            Config.seat_plan_ids[seat_plan_id_index],
+                            Config.seat_plan_prices[seat_plan_id_index],
+                        )
+            except Exception as e:
+                print("Exception")
+                print(e)
+            time.sleep(1)
+
+    def postOrder(self, seat_plan_id, seat_plan_price: int):
+        deliver_method = "EXPRESS"
+        # 获取默认收货地址
+        # address = request.get_address()
+        address_id = self.address["addressId"]  # 地址id
+        location_city_id = self.address["locationId"]  # 460102
+        receiver = self.address["username"]  # 收件人
+        cellphone = self.address["cellphone"]  # 电话
+        detail_address = self.address["detailAddress"]  # 详细地址
+
+        # 下单
+        result = request.create_order(
+            Config.show_id,
+            Config.session_id,
+            seat_plan_id,
+            seat_plan_price,
+            Config.buy_count,
+            deliver_method,
+            self.express_fee["priceItemVal"],
+            receiver,
+            cellphone,
+            address_id,
+            detail_address,
+            location_city_id,
+            self.audience_ids,
+            self.token,
+        )
+        if result["statusCode"] == 200:
+            request.notification(Config.push_token, self.push_flag + "抢到了！")
+            return True
+        return False
+
+    def print(self, message):
+        print(f"[{self.push_flag}] {message}")
+
+
+thread_list = []
+for k, v in config.token.items():
+    print(f"k={k} start")
+    push_flag = k
+    token = v
+    thread = Script(token, push_flag)
+    thread.start()
+    thread_list.append(thread)
+
+for item in thread_list:
+    print(f"k={k} join")
+    item.join()
 
 while True:
-    try:
-        # 如果没有指定场次，则默认从第一场开始刷
-        if not session_id:
-            # 如果项目不是在售状态就一直刷，直到变成在售状态拿到场次id，如果有多场，默认拿第一场
-            while True:
-                sessions = request.get_sessions(show_id)
-                if sessions:
-                    for i in sessions:
-                        if i["sessionStatus"] == 'ON_SALE' and i["bizShowSessionId"] not in session_id_exclude:
-                            session_id = i["bizShowSessionId"]
-                            print("session_id:" + session_id)
-                            break
-                    if session_id:
-                        break
-                    else:
-                        print("未获取到在售状态且符合购票数量需求的session_id")
-                        session_id_exclude = []  # 再给自己一次机会，万一被排除掉的场次又放票了呢
-        # 获取座位余票信息，默认从最低价开始
-        seat_plans = request.get_seat_plans(show_id, session_id)
-        seat_count = request.get_seat_count(show_id, session_id)
-        print(seat_count)
-
-        for i in seat_count:
-            if i["canBuyCount"] >= buy_count:
-                seat_plan_id = i["seatPlanId"]
-                for j in seat_plans:
-                    if j["seatPlanId"] == seat_plan_id:
-                        price = j["originalPrice"]  # 门票单价
-                        break
-                break
-        # 如果没有拿到seat_plan_id，说明该场次所有座位的余票都不满足购票数量需求，就重新开始刷下一场次
-        if not seat_plan_id:
-            print("该场次" + session_id + "没有符合条件的座位，将为你继续搜寻其他在售场次")
-            session_id_exclude.append(session_id)  # 排除掉这个场次
-            session_id = ''
-            continue
-
-        if not deliver_method:
-            deliver_method = request.get_deliver_method(show_id, session_id, seat_plan_id, price, buy_count)
-        print("deliver_method:" + deliver_method)
-
-        if deliver_method == "VENUE_E":
-            request.create_order(show_id, session_id, seat_plan_id, price, buy_count, deliver_method, 0, None,
-                                 None, None, None, None, [])
-        else:
-            # 获取观演人信息
-            audiences = request.get_audiences()
-            if len(audience_idx) == 0:
-                audience_idx = range(buy_count)
-            audience_ids = [audiences[i]["id"] for i in audience_idx]
-
-            if deliver_method == "EXPRESS":
-                # 获取默认收货地址
-                address = request.get_address()
-                address_id = address["addressId"]  # 地址id
-                location_city_id = address["locationId"]  # 460102
-                receiver = address["username"]  # 收件人
-                cellphone = address["cellphone"]  # 电话
-                detail_address = address["detailAddress"]  # 详细地址
-
-                # 获取快递费用
-                express_fee = request.get_express_fee(show_id, session_id, seat_plan_id, price, buy_count,
-                                                      location_city_id)
-
-                # 下单
-                request.create_order(show_id, session_id, seat_plan_id, price, buy_count, deliver_method,
-                                     express_fee["priceItemVal"], receiver,
-                                     cellphone, address_id, detail_address, location_city_id, audience_ids)
-            elif deliver_method == "VENUE" or deliver_method == "E_TICKET":
-                request.create_order(show_id, session_id, seat_plan_id, price, buy_count, deliver_method, 0, None,
-                                     None, None, None, None, audience_ids)
-            else:
-                print("不支持的deliver_method:" + deliver_method)
-        break
-    except Exception as e:
-        print(e)
-        session_id_exclude.append(session_id)  # 排除掉这个场次
-        session_id = ''
-
+    time.sleep(1)
