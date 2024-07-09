@@ -128,6 +128,28 @@ def get_audiences(token) -> list | None:
     return None
 
 
+# 添加观影人
+def add_audiences(token, userName, idNumber):
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.75 Mobile Safari/537.36",
+        "Content-Type": "application/json",
+        "access-token": token,
+    }
+    data = {
+        "src": "WEB",
+        "ver": "4.10.1",
+        "bizCode": "FHL_M",
+        "name": userName,
+        "idType": "ID_CARD",
+        "idNo": idNumber,
+    }
+    return requestsPost(
+        "https://m.piaoxingqiu.com/cyy_gatewayapi/user/buyer/v4/user_audiences",
+        headers,
+        data,
+    )
+
+
 # 获取收货地址
 def get_address(token) -> dict | None:
     headers = {
